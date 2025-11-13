@@ -3,7 +3,7 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import axios from 'axios';
 import { selectToken } from '../auth/authSlice';
 
-const API = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API = process.env.REACT_APP_API_URL || 'http://localhost:4000/api';
 
 // Helper to get auth headers
 const authConfig = (token) => ({

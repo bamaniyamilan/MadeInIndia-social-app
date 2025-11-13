@@ -1,12 +1,24 @@
 // client/src/features/auth/authSlice.js
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import axios from 'axios';
+import { initSocket, cleanupSocket } from '../../utils/socket';
 
-const API = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API = process.env.REACT_APP_API_URL || 'http://localhost:4000/api';
 
 // Read token/user from localStorage if present
 const savedToken = localStorage.getItem('mi_token') || null;
 const savedUser = localStorage.getItem('mi_user') ? JSON.parse(localStorage.getItem('mi_user')) : null;
+
+// If token exists on startup, set axios default header and initialize socket
+if (savedToken) {
+  axios.defaults.headers.common.Authorization = `Bearer ${savedToken}`;
+  try {
+    initSocket(savedToken);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('Socket init failed on startup', e);
+  }
+}
 
 // Async thunks
 export const signup = createAsyncThunk('auth/signup', async (payload, { rejectWithValue }) => {
@@ -57,10 +69,36 @@ const authSlice = createSlice({
       state.status = 'idle';
       localStorage.removeItem('mi_token');
       localStorage.removeItem('mi_user');
+
+      // remove axios default auth header and cleanup socket
+      try {
+        delete axios.defaults.headers.common.Authorization;
+      } catch (e) {
+        /* ignore */
+      }
+      try {
+        cleanupSocket();
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('Socket cleanup failed on logout', e);
+      }
     },
     setToken(state, action) {
       state.token = action.payload;
       localStorage.setItem('mi_token', action.payload);
+
+      // set axios default header and init socket
+      try {
+        axios.defaults.headers.common.Authorization = `Bearer ${action.payload}`;
+      } catch (e) {
+        /* ignore */
+      }
+      try {
+        initSocket(action.payload);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('Socket init failed on setToken', e);
+      }
     },
     setUser(state, action) {
       state.user = action.payload;
@@ -78,7 +116,19 @@ const authSlice = createSlice({
         state.status = 'succeeded';
         state.user = action.payload.user || null;
         state.token = action.payload.token || null;
-        if (action.payload.token) localStorage.setItem('mi_token', action.payload.token);
+
+        if (action.payload.token) {
+          localStorage.setItem('mi_token', action.payload.token);
+          try {
+            axios.defaults.headers.common.Authorization = `Bearer ${action.payload.token}`;
+          } catch (e) {}
+          try {
+            initSocket(action.payload.token);
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('Socket init failed after signup', e);
+          }
+        }
         if (action.payload.user) localStorage.setItem('mi_user', JSON.stringify(action.payload.user));
       })
       .addCase(signup.rejected, (state, action) => {
@@ -95,7 +145,19 @@ const authSlice = createSlice({
         state.status = 'succeeded';
         state.user = action.payload.user || null;
         state.token = action.payload.token || null;
-        if (action.payload.token) localStorage.setItem('mi_token', action.payload.token);
+
+        if (action.payload.token) {
+          localStorage.setItem('mi_token', action.payload.token);
+          try {
+            axios.defaults.headers.common.Authorization = `Bearer ${action.payload.token}`;
+          } catch (e) {}
+          try {
+            initSocket(action.payload.token);
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('Socket init failed after login', e);
+          }
+        }
         if (action.payload.user) localStorage.setItem('mi_user', JSON.stringify(action.payload.user));
       })
       .addCase(login.rejected, (state, action) => {
@@ -116,10 +178,19 @@ const authSlice = createSlice({
       .addCase(fetchMe.rejected, (state, action) => {
         state.status = 'failed';
         state.error = action.payload?.error || action.error?.message;
-        // If token invalid, clear it
+        // If token invalid, clear it and cleanup socket
         if (action.payload?.error === 'Invalid token' || action.payload?.error === 'No token') {
           state.token = null;
           localStorage.removeItem('mi_token');
+          try {
+            delete axios.defaults.headers.common.Authorization;
+          } catch (e) {}
+          try {
+            cleanupSocket();
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('Socket cleanup failed after fetchMe rejection', e);
+          }
         }
       });
   },

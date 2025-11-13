@@ -2,8 +2,6 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
-const streamifier = require('streamifier');
-const cloudinary = require('cloudinary').v2;
 
 const Post = require('../models/Post');
 const User = require('../models/User');
@@ -12,7 +10,7 @@ const requireAuth = require('../middleware/auth');
 const router = express.Router();
 
 // -----------------
-// Multer storage (local)
+// Multer storage (local only)
 // -----------------
 const uploadsDir = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
@@ -20,57 +18,41 @@ if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname) || '';
+    const ext = path.extname(file.originalname) || '.jpg';
     const name = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}${ext}`;
     cb(null, name);
   },
 });
-const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } }); // 10MB per file
 
-// -----------------
-// Cloudinary config (optional)
-// -----------------
-if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
-  cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET,
-  });
-}
-
-const uploadBufferToCloudinary = (buffer, folder = 'madeinindia/posts') =>
-  new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream({ folder }, (err, result) => {
-      if (err) return reject(err);
-      resolve(result);
-    });
-    streamifier.createReadStream(buffer).pipe(uploadStream);
-  });
+const upload = multer({ 
+  storage, 
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB per file
+  fileFilter: (req, file, cb) => {
+    // Allow images and videos
+    if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('video/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image and video files are allowed'), false);
+    }
+  }
+});
 
 // -----------------
 // Helpers
 // -----------------
-const fileToMediaEntry = async (file) => {
+const fileToMediaEntry = (file) => {
   // Determine type by mimetype
   const mime = (file.mimetype || '').toLowerCase();
   let type = 'image';
   if (mime.startsWith('video/')) type = 'video';
-  // If cloudinary configured, upload and return secure_url + type
-  if (cloudinary.config().cloud_name) {
-    const buffer = fs.readFileSync(file.path);
-    try {
-      const result = await uploadBufferToCloudinary(buffer, 'madeinindia/posts');
-      // remove local file
-      try { fs.unlinkSync(file.path); } catch (e) {}
-      return { url: result.secure_url || result.url, type, meta: result };
-    } catch (err) {
-      console.error('Cloudinary upload failed for post media:', err);
-      // fallback to local
-      return { url: `/uploads/${file.filename}`, type, meta: {} };
-    }
-  } else {
-    return { url: `/uploads/${file.filename}`, type, meta: {} };
-  }
+  
+  // Return local file path
+  return { 
+    url: `/uploads/${file.filename}`, 
+    type, 
+    filename: file.filename,
+    originalName: file.originalname
+  };
 };
 
 // -----------------
@@ -118,11 +100,11 @@ router.post('/', requireAuth(), upload.array('files', 6), async (req, res) => {
       }
     }
 
-    // Handle media uploads
+    // Handle media uploads (local only)
     const media = [];
     const files = req.files || [];
     for (const file of files) {
-      const mediaEntry = await fileToMediaEntry(file);
+      const mediaEntry = fileToMediaEntry(file);
       media.push(mediaEntry);
     }
 
@@ -137,13 +119,27 @@ router.post('/', requireAuth(), upload.array('files', 6), async (req, res) => {
 
     await post.save();
 
-    // populate author for response
-    await post.populate({ path: 'author', select: 'username name avatar' }).execPopulate?.() ; // mongoose 6+
-    const populated = await Post.findById(post._id).populate({ path: 'author', select: 'username name avatar' });
+    // Populate author for response
+    const populated = await Post.findById(post._id).populate({ 
+      path: 'author', 
+      select: 'username name avatar' 
+    });
 
     return res.status(201).json({ post: populated });
   } catch (err) {
     console.error('POST /api/posts error:', err);
+    
+    // Clean up uploaded files if there was an error
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (unlinkErr) {
+          console.error('Error cleaning up file:', unlinkErr);
+        }
+      });
+    }
+    
     return res.status(500).json({ error: 'Server error creating post' });
   }
 });
@@ -218,6 +214,41 @@ router.get('/explore', async (req, res) => {
 });
 
 /**
+ * GET /api/posts/user/:userId
+ * Get posts by specific user
+ */
+router.get('/user/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+    const limit = Math.min(parseInt(req.query.limit || '20', 10), 50);
+    const skip = (page - 1) * limit;
+
+    const posts = await Post.find({ author: userId, visibility: 'public' })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate({ path: 'author', select: 'username name avatar' })
+      .lean();
+
+    const total = await Post.countDocuments({ author: userId, visibility: 'public' });
+
+    res.json({ 
+      posts, 
+      meta: { 
+        total, 
+        page, 
+        limit,
+        hasMore: total > page * limit
+      } 
+    });
+  } catch (err) {
+    console.error('GET /api/posts/user/:userId error:', err);
+    res.status(500).json({ error: 'Server error fetching user posts' });
+  }
+});
+
+/**
  * GET /api/posts/:id
  * Get a single post with populated author and comments authors
  */
@@ -266,6 +297,7 @@ router.post('/:id/comment', requireAuth(), async (req, res) => {
     if (!post) return res.status(404).json({ error: 'Post not found' });
 
     const comment = await post.addComment(req.user._id, String(text).slice(0, 1000));
+    
     // Populate comment author for response
     const populatedComment = await Post.findOne(
       { 'comments._id': comment._id },
@@ -300,11 +332,16 @@ router.post('/:id/repost', requireAuth(), async (req, res) => {
     });
 
     await repost.save();
+    
     // increment repostsCount on original
     original.repostsCount = (original.repostsCount || 0) + 1;
     await original.save();
 
-    const populated = await Post.findById(repost._id).populate({ path: 'author', select: 'username name avatar' });
+    const populated = await Post.findById(repost._id).populate({ 
+      path: 'author', 
+      select: 'username name avatar' 
+    });
+    
     return res.status(201).json({ post: populated });
   } catch (err) {
     console.error('POST /api/posts/:id/repost error:', err);
@@ -324,6 +361,22 @@ router.delete('/:id', requireAuth(), async (req, res) => {
     const isAuthor = post.author.equals(req.user._id);
     if (!isAuthor && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Not authorized to delete this post' });
+    }
+
+    // Delete associated media files
+    if (post.media && post.media.length > 0) {
+      post.media.forEach(mediaItem => {
+        if (mediaItem.filename) {
+          const filePath = path.join(uploadsDir, mediaItem.filename);
+          try {
+            if (fs.existsSync(filePath)) {
+              fs.unlinkSync(filePath);
+            }
+          } catch (unlinkErr) {
+            console.error('Error deleting media file:', unlinkErr);
+          }
+        }
+      });
     }
 
     await Post.deleteOne({ _id: post._id });
