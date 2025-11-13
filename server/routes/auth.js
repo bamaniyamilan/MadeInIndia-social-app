@@ -1,30 +1,105 @@
 const express = require('express');
-const router = express.Router();
-const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
-// signup
+const router = express.Router();
+
+const JWT_SECRET = process.env.JWT_SECRET || 'change_this_secret';
+const TOKEN_EXPIRY = '7d'; // token lifetime
+
+// --- Simple auth middleware (keeps this file self-contained for now) ---
+const authMiddleware = async (req, res, next) => {
+  try {
+    const header = req.header('Authorization') || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (!token) return res.status(401).json({ error: 'No token provided' });
+
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (!payload || !payload.id) return res.status(401).json({ error: 'Invalid token' });
+
+    const user = await User.findById(payload.id).select('-password');
+    if (!user) return res.status(401).json({ error: 'User not found' });
+
+    req.user = user;
+    next();
+  } catch (err) {
+    console.error('authMiddleware error:', err.message);
+    return res.status(401).json({ error: 'Authentication failed' });
+  }
+};
+
+// --- Helpers ---
+const generateToken = (user) => {
+  return jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: TOKEN_EXPIRY });
+};
+
+// --- Routes ---
+
+// Signup
+// POST /api/auth/signup
+// body: { name, username, email, password }
 router.post('/signup', async (req, res) => {
-    try {
-        const { name, username, email, password } = req.body;
-        const hashed = await bcrypt.hash(password, 10);
-        const user = await User.create({ name, username, email, password: hashed });
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-        res.json({ user: { id: user._id, username: user.username }, token });
-    } catch (err) { res.status(400).json({ error: err.message }); }
+  try {
+    const { name = '', username, email, password } = req.body;
+    if (!username || !email || !password) {
+      return res.status(400).json({ error: 'username, email and password are required' });
+    }
+
+    // check unique username/email
+    const existingUser = await User.findOne({
+      $or: [{ username: username.toLowerCase() }, { email: email.toLowerCase() }],
+    });
+    if (existingUser) {
+      if (existingUser.username === username.toLowerCase()) {
+        return res.status(409).json({ error: 'Username already taken' });
+      }
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+
+    const user = new User({
+      name,
+      username: username.toLowerCase(),
+      email: email.toLowerCase(),
+      password,
+    });
+
+    await user.save();
+
+    const token = generateToken(user);
+    return res.status(201).json({ user: user.toJSON(), token });
+  } catch (err) {
+    console.error('Signup error:', err);
+    return res.status(500).json({ error: 'Server error during signup' });
+  }
 });
-// login
+
+// Login
+// POST /api/auth/login
+// body: { email, password }
 router.post('/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-        const user = await User.findOne({ email });
-        if (!user) return res.status(400).json({ error: 'Invalid credentials' });
-        const ok = await bcrypt.compare(password, user.password);
-        if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-        res.json({ user: { id: user._id, username: user.username }, token });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+
+    const ok = await user.comparePassword(password);
+    if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
+
+    const token = generateToken(user);
+    return res.json({ user: user.toJSON(), token });
+  } catch (err) {
+    console.error('Login error:', err);
+    return res.status(500).json({ error: 'Server error during login' });
+  }
+});
+
+// Get current user
+// GET /api/auth/me
+// Header: Authorization: Bearer <token>
+router.get('/me', authMiddleware, async (req, res) => {
+  return res.json({ user: req.user });
 });
 
 module.exports = router;
