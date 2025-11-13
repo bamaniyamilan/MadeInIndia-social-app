@@ -1,0 +1,72 @@
+/* client/src/styles/index.css */
+
+/* Work Sans (used site-wide) */
+@import url('https://fonts.googleapis.com/css2?family=Work+Sans:wght@300;400;500;600;700;800&display=swap');
+
+/* Tailwind layers */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Root font-family variable so it's easy to reference */
+:root {
+  --font-sans: 'Work Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    Roboto, 'Helvetica Neue', Arial;
+}
+
+/* Base styles */
+html, body, #root {
+  height: 100%;
+  background-color: #f7f7fb; /* subtle off-white background */
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  margin: 0;
+  color: #0f172a; /* slate-900-ish */
+  line-height: 1.4;
+}
+
+/* Container helper similar to tailwind's container but with nicer max-width */
+.container {
+  max-width: 1100px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+/* Simple card */
+.card {
+  @apply bg-white rounded-2xl shadow-sm p-4;
+}
+
+/* Avatar helper */
+.avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 9999px;
+  object-fit: cover;
+  display: inline-block;
+}
+
+/* Tiny utility for subtle clickable items */
+.clickable {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Responsive helpers */
+@media (min-width: 1024px) {
+  .lg-sidebar {
+    width: 260px;
+  }
+}
+
+/* Accessibility focus */
+:focus {
+  outline: 3px solid rgba(59,130,246,0.25); /* blue-500 at low opacity */
+  outline-offset: 2px;
+}
